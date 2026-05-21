@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# PyTorch checkpoints / training logs
+*.pt
+*.pth
+runs/
+checkpoints/
+logs/
+
+# Claude 내부 메모리 (프로젝트 코드 아님)
+memory/
+
+# OS
+.DS_Store
