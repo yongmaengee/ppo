@@ -92,14 +92,25 @@ class RolloutBuffer:
         self.returns = torch.zeros(n_steps, dtype=torch.float32, device=device)
         self.n_steps = n_steps
 
+    # ======================================================================
+    # ## 여기요! [GAE 본체] advantage 계산의 핵심. 수정의 메인 무대.
+    #   - 시간 역방향으로 누적하며 A_t = δ_t + (γλ)·A_{t+1} 재귀
+    #   - 손볼 만한 포인트: bootstrap 연결 / done 마스킹 / returns 정의 /
+    #     advantage·return 분리 여부 / lambda·gamma 적용 위치
+    # ======================================================================
     def compute_gae(self, last_value: torch.Tensor, gamma: float, lam: float):
         gae = torch.zeros(1, device=self.values.device)
         for t in reversed(range(self.n_steps)):
+            # ## 여기요! 다음 스텝 가치 V(s_{t+1}) — 마지막 칸은 bootstrap(last_value) 사용
             next_value = last_value if t == self.n_steps - 1 else self.values[t + 1]
+            # ## 여기요! done=1 이면 미래 보상 차단 (에피소드 경계 처리)
             next_nonterminal = 1.0 - self.dones[t]
+            # ## 여기요! TD 오차 δ_t = r_t + γ·V(s_{t+1})·(1-done) − V(s_t)
             delta = self.rewards[t] + gamma * next_value * next_nonterminal - self.values[t]
+            # ## 여기요! GAE 재귀식 A_t = δ_t + γ·λ·(1-done)·A_{t+1}
             gae = delta + gamma * lam * next_nonterminal * gae
             self.advantages[t] = gae.squeeze()
+        # ## 여기요! value 학습 타깃 return = advantage + V(s_t)
         self.returns = self.advantages + self.values
 
 
@@ -131,7 +142,9 @@ def collect_rollout(env: PPOOpponentEnv, model: ActorCritic, buf: RolloutBuffer,
             next_obs, next_info = env.reset()
         obs, info = next_obs, next_info
 
-    # bootstrap value
+    # ## 여기요! [GAE 입력] bootstrap value = rollout 끝 상태의 가치 V(s_T).
+    #   compute_gae 의 last_value 로 들어감. rollout 이 에피소드 중간에서
+    #   잘렸을 때 미래 가치를 이 값으로 이어붙임 (truncation 처리와 연결됨).
     with torch.no_grad():
         obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
         _, last_value = model.forward(obs_t)
@@ -146,6 +159,9 @@ def ppo_update(model: ActorCritic, optimizer: optim.Optimizer, buf: RolloutBuffe
                args: Args) -> dict:
     n = buf.n_steps
     indices = np.arange(n)
+    # ## 여기요! [GAE 결과 사용] compute_gae 가 채운 advantage 를 가져와 정규화.
+    #   현재는 batch 전체(rollout 전체) 기준 정규화. minibatch 단위 정규화로
+    #   바꿀지 등도 여기서 손볼 수 있음.
     adv = buf.advantages
     adv = (adv - adv.mean()) / (adv.std() + 1e-8)
 
@@ -219,6 +235,8 @@ def main():
     ep_returns: list[float] = []
 
     for update in range(1, args.updates + 1):
+        # ## 여기요! [GAE 호출 흐름] rollout 수집 → GAE 계산 → PPO 업데이트 순서.
+        #   gamma/gae_lambda 는 Args 에 정의됨(상단 dataclass). 이 세 줄이 한 update.
         last_value = collect_rollout(train_env, model, buf, device, ep_returns)
         buf.compute_gae(last_value, args.gamma, args.gae_lambda)
         metrics = ppo_update(model, optimizer, buf, args)
